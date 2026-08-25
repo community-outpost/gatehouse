@@ -1,0 +1,60 @@
+listen_address: ':8080'
+backend_timeout: 5s
+shutdown_timeout: 10s
+max_callback_body_bytes: 65536
+trusted_proxies: []
+
+inbound_api_key: CHANGE_ME
+# Use this instead of inbound_api_key when switching to a secret file:
+# inbound_api_key_file: /run/secrets/gatehouse_inbound_api_key
+
+mysql:
+  dsn: 'gatehouse:CHANGE_ME@tcp(db.example.internal:3306)/gatehouse'
+  # Use this instead of dsn when switching to a secret file:
+  # dsn_file: /run/secrets/gatehouse_mysql_dsn
+
+  users_table: users
+  pending_logins_table: pending_logins
+  startup_timeout: 10s
+  advisory_lock_timeout_seconds: 5
+
+backends:
+  docker:
+    enabled: true
+    host: unix:///var/run/docker.sock
+    network: gatehouse
+    refresh_interval: 5s
+    label_prefix: com.community-outpost.gatehouse
+
+    default_scheme: http
+    default_port: 8080
+    default_path: /env/{environment}/contract/1/LoginCode
+
+    overrides: {}
+    # overrides:
+    #   example_alpha:
+    #     scheme: https
+    #     host: alpha.internal
+    #     port: 8443
+    #     path: /LoginCode
+    #
+    #   example_private:
+    #     path: /env/{environment}/contract/1/LoginCode
+    #     api_key: replace-with-backend-key
+    #
+    #   example_secret_file:
+    #     api_key_file: /run/secrets/secret-file-backend-key
+
+  static: {}
+  # static:
+  #   # No api_key means pass through the authenticated inbound key.
+  #   example_passthrough:
+  #     callback_url: https://backend.example.com/LoginCode
+  #
+  #   example_private:
+  #     callback_url: https://private.example.com/auth/LoginCode
+  #     api_key: replace-with-backend-key
+  #
+  #   example_secret_file:
+  #     callback_url: https://secret.example.com/LoginCode
+  #     api_key_file: /run/secrets/secret-file-backend-key
