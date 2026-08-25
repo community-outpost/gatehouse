@@ -19,6 +19,68 @@ flowchart LR
     P --> F[Fallback: HTTP 202]
 ```
 
+## Login flow
+
+```mermaid
+flowchart LR
+    subgraph Device[User device]
+        C[GameClient]
+        W[Web login]
+    end
+
+    subgraph APIs[Services HTTP APIs]
+        E{Configured environment}
+        B1[Services backend A]
+        B2[Services backend B]
+        B3[Services backend C]
+        L[Legacy Services]
+        R[HTTP response]
+    end
+
+    subgraph Authentication
+        I[Authentication provider]
+        G[Gatehouse]
+        D{Callback route}
+    end
+
+    subgraph Database[Central MariaDB]
+        U[(gatehouse.users)]
+        UV[users views]
+        P[(gatehouse.pending_logins)]
+        PV[pending_logins view]
+    end
+
+    C -->|1. HTTP LoginCode; 6. HTTP CheckLogin| E
+    E -->|Backend A| B1
+    E -->|Backend B| B2
+    E -->|Backend C| B3
+    E -->|Legacy| L
+    B1 --> R
+    B2 --> R
+    B3 --> R
+    L --> R
+    R -->|2. Code; 7. Waiting, failure, or session| C
+
+    C -->|3. Open browser| W
+    W -->|4. Authenticate| I
+    I -->|5. Callback| G
+
+    G -->|Upsert| U
+    B1 -->|User SQL| UV
+    B2 -->|User SQL| UV
+    B3 -->|User SQL| UV
+    L -->|User SQL| UV
+    UV -->|View target| U
+
+    G --> D
+    D -->|Backend A| B1
+    D -->|Backend B| B2
+    D -->|Backend C| B3
+    D -->|No backend responds| P
+    L -->|Legacy CheckLogin SQL| PV
+    PV -->|View target| P
+```
+
 ## HTTP API
 
 | Method | Path                                      | Purpose                           |
