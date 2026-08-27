@@ -23,8 +23,8 @@ func TestParseNormalizesCallback(t *testing.T) {
 	if result.Code != "ABC123" {
 		t.Fatalf("Code = %q", result.Code)
 	}
-	if _, ok := result.Payload["opaque"].(map[string]any); !ok {
-		t.Fatalf("opaque = %#v", result.Payload["opaque"])
+	if _, ok := result.Payload["opaque"]; ok {
+		t.Fatalf("unexpected opaque field = %#v", result.Payload["opaque"])
 	}
 	if result.Payload["code"] != "ABC123" {
 		t.Fatalf("canonical code = %v", result.Payload["code"])
@@ -77,7 +77,7 @@ func TestParseRejectsEnvironmentMismatch(t *testing.T) {
 func TestParseRejectsFailedCallbackWithoutUser(t *testing.T) {
 	t.Parallel()
 
-	_, err := Parse([]byte(`{"env":"example_legacy","code":"ABC","success":false}`), "")
+	_, err := Parse([]byte(`{"env":"example_native","code":"ABC","success":false}`), "")
 	if err == nil {
 		t.Fatal("Parse() error = nil")
 	}

@@ -50,6 +50,42 @@ func TestServicesCompatibleRouteDispatchesAndReportsBackendDelivery(t *testing.T
 	}
 }
 
+func TestLoginCodeCompletionUsesGORedirectProviderNameAsIssuer(t *testing.T) {
+	t.Parallel()
+
+	dispatcher := &fakeDispatcher{delivery: callback.DeliveryBackend}
+	resolver := &fakePrincipalResolver{createdUserID: 99}
+	server := newTestServer(t, dispatcher, testLogger())
+	if err := server.ConfigureLogin(resolver, LoginOptions{
+		GORedirectIssuer: "generalsonline",
+		StateSecret:      "state-secret",
+		Providers: map[string]LoginProvider{
+			"generalsonline": {
+				Label:       "GeneralsOnline",
+				RedirectURL: "https://login.example/",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/LoginCode",
+		strings.NewReader(`{"env":"example_alpha","code":"abc123","user_id":42,"success":true}`))
+	request.Header.Set("X-Api-Key", "secret")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body)
+	}
+	if resolver.issuer != "generalsonline" || resolver.subject != "42" {
+		t.Fatalf("principal = %q/%q", resolver.issuer, resolver.subject)
+	}
+	if dispatcher.received.UserID != 99 {
+		t.Fatalf("callback user_id = %d", dispatcher.received.UserID)
+	}
+}
+
 func TestUnsupportedContractVersionDoesNotDispatch(t *testing.T) {
 	t.Parallel()
 
@@ -76,7 +112,7 @@ func TestCanonicalRouteReportsMySQLFallback(t *testing.T) {
 	dispatcher := &fakeDispatcher{delivery: callback.DeliveryMySQLFallback}
 	server := newTestServer(t, dispatcher, testLogger())
 	request := httptest.NewRequest(http.MethodPost, "/LoginCode",
-		strings.NewReader(`{"env":"example_legacy","code":"ABC","user_id":-1,"success":false}`))
+		strings.NewReader(`{"env":"example_native","code":"ABC","user_id":-1,"success":false}`))
 	request.Header.Set("X-Api-Key", "secret")
 	response := httptest.NewRecorder()
 
@@ -95,7 +131,7 @@ func TestMissingUserIDDoesNotDispatch(t *testing.T) {
 	dispatcher := &fakeDispatcher{delivery: callback.DeliveryMySQLFallback}
 	server := newTestServer(t, dispatcher, testLogger())
 	request := httptest.NewRequest(http.MethodPost, "/LoginCode",
-		strings.NewReader(`{"env":"example_legacy","code":"ABC","success":false}`))
+		strings.NewReader(`{"env":"example_native","code":"ABC","success":false}`))
 	request.Header.Set("X-Api-Key", "secret")
 	response := httptest.NewRecorder()
 
@@ -109,7 +145,7 @@ func TestMissingUserIDDoesNotDispatch(t *testing.T) {
 	}
 }
 
-func TestCallbackLogIncludesFullBodyAndExcludesAPIKey(t *testing.T) {
+func TestCallbackLogExcludesBodyAndAPIKey(t *testing.T) {
 	t.Parallel()
 
 	dispatcher := &fakeDispatcher{delivery: callback.DeliveryBackend}
@@ -126,10 +162,13 @@ func TestCallbackLogIncludesFullBodyAndExcludesAPIKey(t *testing.T) {
 	}
 
 	logged := output.String()
-	for _, expected := range []string{"FULLCODE", "example_debug", "callback.delivery", "backend"} {
+	for _, expected := range []string{"example_debug", "callback.delivery", "backend"} {
 		if !strings.Contains(logged, expected) {
 			t.Fatalf("log does not contain %q: %s", expected, logged)
 		}
+	}
+	if strings.Contains(logged, "FULLCODE") {
+		t.Fatalf("log contains authentication code: %s", logged)
 	}
 	if strings.Contains(logged, "secret") {
 		t.Fatalf("log contains inbound API key: %s", logged)
@@ -142,7 +181,7 @@ type fakeDispatcher struct {
 	calls    int
 }
 
-func (f *fakeDispatcher) Dispatch(_ context.Context, received callback.AuthCallback, _, _ string) (callback.Delivery, error) {
+func (f *fakeDispatcher) Dispatch(_ context.Context, received callback.AuthCallback, _ string) (callback.Delivery, error) {
 	f.calls++
 	f.received = received
 	return f.delivery, nil

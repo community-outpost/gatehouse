@@ -41,7 +41,7 @@ func Parse(body []byte, pathEnvironment string) (AuthCallback, error) {
 
 	code, _ := stringValue(root, "code", "game_code", "gamecode")
 	code = strings.ToUpper(strings.TrimSpace(code))
-	if !validCode(code) {
+	if !ValidCode(code) {
 		return AuthCallback{}, errors.New("callback code must contain 1 to 32 ASCII letters or digits")
 	}
 
@@ -60,21 +60,20 @@ func Parse(body []byte, pathEnvironment string) (AuthCallback, error) {
 		return AuthCallback{}, errors.New("a successful callback requires a positive user_id")
 	}
 
-	root["env"] = environment
-	root["code"] = code
-	root["user_id"] = userID
-	root["success"] = success
+	payload := map[string]any{
+		"env": environment, "code": code, "user_id": userID, "success": success,
+	}
 
 	return AuthCallback{
 		Environment: environment,
 		Code:        code,
 		UserID:      userID,
 		Success:     success,
-		Payload:     root,
+		Payload:     payload,
 	}, nil
 }
 
-func validCode(code string) bool {
+func ValidCode(code string) bool {
 	if len(code) < 1 || len(code) > 32 {
 		return false
 	}

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -24,16 +23,19 @@ type Readiness interface {
 }
 
 type Dispatcher interface {
-	Dispatch(context.Context, callback.AuthCallback, string, string) (callback.Delivery, error)
+	Dispatch(context.Context, callback.AuthCallback, string) (callback.Delivery, error)
 }
 
 type Server struct {
 	dispatcher         Dispatcher
 	readiness          Readiness
 	keyHash            [sha256.Size]byte
+	stateKey           [sha256.Size]byte
 	maxBodyBytes       int64
 	clientIPMiddleware func(http.Handler) http.Handler
 	logger             *slog.Logger
+	principalResolver  PrincipalResolver
+	loginOptions       LoginOptions
 }
 
 func New(dispatcher Dispatcher, readiness Readiness, apiKey string, maxBodyBytes int64, trustedProxies []string, logger *slog.Logger) (*Server, error) {
@@ -63,13 +65,23 @@ func (s *Server) Handler() http.Handler {
 		},
 		LogRequestHeaders:  []string{"Content-Type"},
 		LogResponseHeaders: []string{"Content-Type", "X-Gatehouse-Delivery"},
-		LogRequestBody: func(request *http.Request) bool {
-			return request.Method == http.MethodPost && isCallbackPath(request.URL.Path)
-		},
-		LogBodyMaxLen: int(s.maxBodyBytes),
 	}))
 	router.Get("/healthz", s.health)
 	router.Get("/readyz", s.ready)
+	router.Get("/favicon.png", s.serveBrandFavicon)
+	router.Get("/favicon.ico", s.serveBrandFavicon)
+	router.Get("/assets/branding/logo", s.serveBrandLogo)
+	router.Get("/assets/providers/{provider}", s.serveProviderIcon)
+	router.Get("/assets/display-name.js", serveDisplayNameScript)
+	if s.principalResolver != nil {
+		router.Group(func(login chi.Router) {
+			login.Use(middleware.ThrottleBacklog(64, 128, 5*time.Second))
+			login.Get("/login", s.loginChooser)
+			login.Get("/login/{provider}", s.beginLogin)
+			login.Get("/login/{provider}/return", s.finishLogin)
+			login.Post("/login/{provider}/return", s.completeEnrollment)
+		})
+	}
 	router.Group(func(protected chi.Router) {
 		protected.Use(s.authenticate)
 		protected.Post("/LoginCode", s.receiveCallback)
@@ -128,13 +140,24 @@ func (s *Server) receiveCallback(writer http.ResponseWriter, request *http.Reque
 		writeProblem(writer, http.StatusBadRequest, "Invalid callback", err.Error())
 		return
 	}
+	if authCallback.Success && s.principalResolver != nil && s.loginOptions.GORedirectIssuer != "" {
+		userID, err := s.principalResolver.ResolveOrCreateUser(
+			request.Context(), s.loginOptions.GORedirectIssuer, localUserSubject(authCallback.UserID), "")
+		if err != nil {
+			_ = httplog.SetError(request.Context(), err)
+			writeProblem(writer, http.StatusServiceUnavailable, "Could not resolve upstream user", "")
+			return
+		}
+		authCallback.UserID = userID
+		authCallback.Payload["user_id"] = userID
+	}
 	httplog.SetAttrs(request.Context(),
 		slog.String("callback.environment", authCallback.Environment),
 		slog.Int64("callback.user_id", authCallback.UserID),
 		slog.Bool("callback.success", authCallback.Success),
 		slog.String("request.id", middleware.GetReqID(request.Context())),
 	)
-	delivery, err := s.dispatcher.Dispatch(request.Context(), authCallback, middleware.GetReqID(request.Context()), request.Header.Get("X-Api-Key"))
+	delivery, err := s.dispatcher.Dispatch(request.Context(), authCallback, middleware.GetReqID(request.Context()))
 	if err != nil {
 		_ = httplog.SetError(request.Context(), err)
 		if errors.Is(err, context.Canceled) {
@@ -155,11 +178,6 @@ func (s *Server) receiveCallback(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	writer.WriteHeader(http.StatusAccepted)
-}
-
-func isCallbackPath(path string) bool {
-	return path == "/LoginCode" ||
-		(strings.HasPrefix(path, "/env/") && strings.HasSuffix(path, "/LoginCode"))
 }
 
 func (s *Server) validAPIKey(candidate string) bool {

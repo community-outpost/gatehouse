@@ -19,15 +19,16 @@ var environmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 var mysqlIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
 type Config struct {
-	ListenAddress        string         `yaml:"listen_address"`
-	InboundAPIKey        string         `yaml:"inbound_api_key"`
-	InboundAPIKeyFile    string         `yaml:"inbound_api_key_file"`
-	BackendTimeout       Duration       `yaml:"backend_timeout"`
-	ShutdownTimeout      Duration       `yaml:"shutdown_timeout"`
-	MaxCallbackBodyBytes int64          `yaml:"max_callback_body_bytes"`
-	TrustedProxies       []string       `yaml:"trusted_proxies"`
-	MySQL                MySQLConfig    `yaml:"mysql"`
-	Backends             BackendsConfig `yaml:"backends"`
+	ListenAddress        string               `yaml:"listen_address"`
+	InboundAPIKey        string               `yaml:"inbound_api_key"`
+	InboundAPIKeyFile    string               `yaml:"inbound_api_key_file"`
+	BackendTimeout       Duration             `yaml:"backend_timeout"`
+	ShutdownTimeout      Duration             `yaml:"shutdown_timeout"`
+	MaxCallbackBodyBytes int64                `yaml:"max_callback_body_bytes"`
+	TrustedProxies       []string             `yaml:"trusted_proxies"`
+	MySQL                MySQLConfig          `yaml:"mysql"`
+	Authentication       AuthenticationConfig `yaml:"authentication"`
+	Backends             BackendsConfig       `yaml:"backends"`
 }
 
 type MySQLConfig struct {
@@ -35,6 +36,7 @@ type MySQLConfig struct {
 	DSNFile                    string   `yaml:"dsn_file"`
 	UsersTable                 string   `yaml:"users_table"`
 	PendingLoginsTable         string   `yaml:"pending_logins_table"`
+	LoginPrincipalsTable       string   `yaml:"login_principals_table"`
 	StartupTimeout             Duration `yaml:"startup_timeout"`
 	AdvisoryLockTimeoutSeconds int      `yaml:"advisory_lock_timeout_seconds"`
 }
@@ -93,9 +95,11 @@ func Load() (Config, error) {
 		MySQL: MySQLConfig{
 			UsersTable:                 "users",
 			PendingLoginsTable:         "pending_logins",
+			LoginPrincipalsTable:       "login_principals",
 			StartupTimeout:             Duration{Duration: 10 * time.Second},
 			AdvisoryLockTimeoutSeconds: 5,
 		},
+		Authentication: defaultAuthenticationConfig(),
 		Backends: BackendsConfig{
 			Docker: DockerConfig{
 				Enabled:         true,
@@ -112,7 +116,7 @@ func Load() (Config, error) {
 	}
 
 	if path := strings.TrimSpace(os.Getenv("GATEHOUSE_CONFIG")); path != "" {
-		contents, err := os.ReadFile(path)
+		contents, err := os.ReadFile(path) // #nosec G304 G703 -- the process operator supplies the config path.
 		if err != nil {
 			return Config{}, fmt.Errorf("read config file: %w", err)
 		}
@@ -193,6 +197,7 @@ func (c *Config) resolveSecretFiles() error {
 			return fmt.Errorf("read mysql.dsn_file: %w", err)
 		}
 		c.MySQL.DSN = value
+		c.MySQL.DSNFile = ""
 	}
 	if c.InboundAPIKey != "" && c.InboundAPIKeyFile != "" {
 		return errors.New("set only one of inbound_api_key and inbound_api_key_file")
@@ -203,6 +208,10 @@ func (c *Config) resolveSecretFiles() error {
 			return fmt.Errorf("read inbound_api_key_file: %w", err)
 		}
 		c.InboundAPIKey = value
+		c.InboundAPIKeyFile = ""
+	}
+	if err := c.Authentication.resolveSecretFiles(); err != nil {
+		return err
 	}
 	for environment, override := range c.Backends.Docker.Overrides {
 		if override.APIKey != "" && override.APIKeyFile != "" {
@@ -214,6 +223,7 @@ func (c *Config) resolveSecretFiles() error {
 				return fmt.Errorf("read Docker backend override %q api_key_file: %w", environment, err)
 			}
 			override.APIKey = value
+			override.APIKeyFile = ""
 			c.Backends.Docker.Overrides[environment] = override
 		}
 	}
@@ -227,6 +237,7 @@ func (c *Config) resolveSecretFiles() error {
 				return fmt.Errorf("read backend %q api_key_file: %w", environment, err)
 			}
 			backend.APIKey = value
+			backend.APIKeyFile = ""
 			c.Backends.Static[environment] = backend
 		}
 	}
@@ -244,7 +255,7 @@ func readSecretFile(path string) (string, error) {
 	if info.Size() > 64*1024 {
 		return "", errors.New("secret file exceeds 64 KiB")
 	}
-	contents, err := os.ReadFile(path)
+	contents, err := os.ReadFile(path) // #nosec G304 -- secret paths come only from trusted process configuration.
 	if err != nil {
 		return "", err
 	}
@@ -256,14 +267,23 @@ func readSecretFile(path string) (string, error) {
 }
 
 func (c *Config) Validate() error {
+	if c.MySQL.LoginPrincipalsTable == "" {
+		c.MySQL.LoginPrincipalsTable = "login_principals"
+	}
+	if c.Authentication.UI == (LoginUIConfig{}) {
+		c.Authentication.UI = defaultAuthenticationConfig().UI
+	}
+	if c.Authentication.Providers == nil {
+		c.Authentication.Providers = make(map[string]ProviderConfig)
+	}
 	if strings.TrimSpace(c.ListenAddress) == "" {
 		return errors.New("listen_address is required")
 	}
 	if strings.TrimSpace(c.MySQL.DSN) == "" {
 		return errors.New("mysql.dsn is required")
 	}
-	if c.InboundAPIKey == "" {
-		return errors.New("inbound_api_key is required")
+	if len(c.InboundAPIKey) < 32 || c.InboundAPIKey == "CHANGE_ME" {
+		return errors.New("inbound_api_key must contain at least 32 characters and must not be a placeholder")
 	}
 	if c.BackendTimeout.Duration <= 0 {
 		return errors.New("backend_timeout must be positive")
@@ -292,6 +312,9 @@ func (c *Config) Validate() error {
 	if err := c.MySQL.validate(); err != nil {
 		return err
 	}
+	if err := c.Authentication.validate(); err != nil {
+		return err
+	}
 	if c.Backends.Docker.Enabled {
 		if err := c.Backends.Docker.validate(); err != nil {
 			return err
@@ -309,6 +332,9 @@ func (c *Config) Validate() error {
 		}
 		if backend.CallbackURL == "" {
 			return fmt.Errorf("static backend %q requires callback_url", environment)
+		}
+		if backend.APIKey == "" {
+			return fmt.Errorf("static backend %q requires a dedicated api_key or api_key_file", environment)
 		}
 		parsed, err := url.ParseRequestURI(backend.CallbackURL)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -363,8 +389,9 @@ func (c *Config) normalizeDockerOverrides() error {
 
 func (c MySQLConfig) validate() error {
 	for name, value := range map[string]string{
-		"users_table":          c.UsersTable,
-		"pending_logins_table": c.PendingLoginsTable,
+		"users_table":            c.UsersTable,
+		"pending_logins_table":   c.PendingLoginsTable,
+		"login_principals_table": c.LoginPrincipalsTable,
 	} {
 		if !mysqlIdentifierPattern.MatchString(value) {
 			return fmt.Errorf("mysql.%s must contain only letters, digits, and underscores and be at most 64 characters", name)
@@ -388,6 +415,9 @@ func (c DockerConfig) validate() error {
 	}
 	if strings.TrimSpace(c.LabelPrefix) == "" {
 		return errors.New("docker.label_prefix is required")
+	}
+	if strings.TrimSpace(c.Network) == "" {
+		return errors.New("docker.network is required")
 	}
 	if c.DefaultScheme != "http" && c.DefaultScheme != "https" {
 		return errors.New("docker.default_scheme must be http or https")

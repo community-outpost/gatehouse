@@ -12,7 +12,7 @@ func TestValidateNormalizesBackendEnvironment(t *testing.T) {
 
 	cfg := Config{
 		ListenAddress:        ":8080",
-		InboundAPIKey:        "secret",
+		InboundAPIKey:        "0123456789abcdef0123456789abcdef",
 		BackendTimeout:       Duration{Duration: 5 * time.Second},
 		ShutdownTimeout:      Duration{Duration: 10 * time.Second},
 		MaxCallbackBodyBytes: 65536,
@@ -48,7 +48,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	t.Setenv("GATEHOUSE_CONFIG", filepath.Join("..", "..", "config.example.yaml"))
 	t.Setenv("GATEHOUSE_MYSQL_DSN", "user:pass@tcp(db.example.internal:3306)/gatehouse")
-	t.Setenv("GATEHOUSE_INBOUND_API_KEY", "callback-secret")
+	t.Setenv("GATEHOUSE_INBOUND_API_KEY", "0123456789abcdef0123456789abcdef")
 
 	cfg, err := Load()
 	if err != nil {
@@ -69,6 +69,9 @@ func TestExampleConfigLoads(t *testing.T) {
 	if len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("TrustedProxies = %#v", cfg.TrustedProxies)
 	}
+	if issuer := cfg.Authentication.GORedirectIssuer(); issuer != "generalsonline" {
+		t.Fatalf("GORedirectIssuer() = %q", issuer)
+	}
 }
 
 func TestResolveSecretFiles(t *testing.T) {
@@ -85,13 +88,29 @@ func TestResolveSecretFiles(t *testing.T) {
 	cfg := Config{
 		MySQL:             MySQLConfig{DSNFile: mysqlPath},
 		InboundAPIKeyFile: keyPath,
-		Backends:          BackendsConfig{Static: map[string]BackendConfig{}},
+		Authentication: AuthenticationConfig{Providers: map[string]ProviderConfig{
+			"provider": {ClientSecretFile: keyPath},
+		}},
+		Backends: BackendsConfig{
+			Docker: DockerConfig{Overrides: map[string]DockerOverrideConfig{
+				"example_alpha": {APIKeyFile: keyPath},
+			}},
+			Static: map[string]BackendConfig{
+				"example_beta": {APIKeyFile: keyPath},
+			},
+		},
 	}
 	if err := cfg.resolveSecretFiles(); err != nil {
 		t.Fatalf("resolveSecretFiles() error = %v", err)
 	}
 	if cfg.MySQL.DSN != "user:pass@tcp(db.example.internal:3306)/gatehouse" || cfg.InboundAPIKey != "callback-secret" {
 		t.Fatalf("resolved config = %+v", cfg)
+	}
+	if cfg.MySQL.DSNFile != "" || cfg.InboundAPIKeyFile != "" ||
+		cfg.Authentication.Providers["provider"].ClientSecretFile != "" ||
+		cfg.Backends.Docker.Overrides["example_alpha"].APIKeyFile != "" ||
+		cfg.Backends.Static["example_beta"].APIKeyFile != "" {
+		t.Fatalf("resolved secret file fields were not cleared: %+v", cfg)
 	}
 }
 
@@ -100,7 +119,7 @@ func TestValidateRejectsArbitraryBackendScheme(t *testing.T) {
 
 	cfg := Config{
 		ListenAddress:        ":8080",
-		InboundAPIKey:        "secret",
+		InboundAPIKey:        "0123456789abcdef0123456789abcdef",
 		BackendTimeout:       Duration{Duration: 5 * time.Second},
 		ShutdownTimeout:      Duration{Duration: 10 * time.Second},
 		MaxCallbackBodyBytes: 65536,
@@ -125,6 +144,24 @@ func TestValidateRejectsStaticBackendWithoutURL(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsStaticBackendWithoutDedicatedKey(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Backends.Static["example_alpha"] = BackendConfig{CallbackURL: "https://alpha.example/LoginCode"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil")
+	}
+}
+
+func TestValidateRejectsWeakInboundAPIKey(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.InboundAPIKey = "secret"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil")
+	}
+}
+
 func TestValidateNormalizesDockerOverride(t *testing.T) {
 	t.Parallel()
 	cfg := validConfig()
@@ -143,7 +180,7 @@ func TestValidateRejectsUnsafeMySQLIdentifier(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
 		ListenAddress:        ":8080",
-		InboundAPIKey:        "secret",
+		InboundAPIKey:        "0123456789abcdef0123456789abcdef",
 		BackendTimeout:       Duration{Duration: 5 * time.Second},
 		ShutdownTimeout:      Duration{Duration: 10 * time.Second},
 		MaxCallbackBodyBytes: 65536,
@@ -178,7 +215,7 @@ func validMySQLConfig(dsn string) MySQLConfig {
 func validConfig() Config {
 	return Config{
 		ListenAddress:        ":8080",
-		InboundAPIKey:        "secret",
+		InboundAPIKey:        "0123456789abcdef0123456789abcdef",
 		BackendTimeout:       Duration{Duration: 5 * time.Second},
 		ShutdownTimeout:      Duration{Duration: 10 * time.Second},
 		MaxCallbackBodyBytes: 65536,

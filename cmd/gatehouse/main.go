@@ -36,6 +36,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(32)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+	db.SetConnMaxLifetime(30 * time.Minute)
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), cfg.MySQL.StartupTimeout.Duration)
 	if err := db.PingContext(startupCtx); err != nil {
 		cancelStartup()
@@ -55,6 +59,8 @@ func main() {
 	resolver.Start(ctx)
 
 	store := mysqlstore.New(db, cfg.MySQL.UsersTable, cfg.MySQL.PendingLoginsTable, cfg.MySQL.AdvisoryLockTimeoutSeconds)
+	principalResolver := mysqlstore.NewPrincipalResolver(
+		db, cfg.MySQL.UsersTable, cfg.MySQL.LoginPrincipalsTable, cfg.MySQL.AdvisoryLockTimeoutSeconds)
 	forwarder := callback.NewHTTPForwarder(resolver, cfg.BackendTimeout.Duration, logger)
 	dispatcher := callback.NewService(store, forwarder, logger)
 	api, err := httpapi.New(
@@ -67,6 +73,10 @@ func main() {
 	)
 	if err != nil {
 		logger.Error("configure trusted proxies", "error", err)
+		os.Exit(1)
+	}
+	if err := configureLogin(api, cfg, principalResolver); err != nil {
+		logger.Error("configure authentication", "error", err)
 		os.Exit(1)
 	}
 

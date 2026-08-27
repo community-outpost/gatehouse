@@ -14,13 +14,16 @@ func TestQuotedTableQuotesTable(t *testing.T) {
 
 func TestRandomDisplayName(t *testing.T) {
 	t.Parallel()
-	pattern := regexp.MustCompile(`^[A-Z][a-z]+[A-Z][a-z]+[0-9]{1,4}$`)
+	pattern := regexp.MustCompile(`^GO-[A-Z2-7]{13}$`)
 	for range 100 {
-		name := randomDisplayName()
+		name, err := randomDisplayName()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !pattern.MatchString(name) {
 			t.Fatalf("randomDisplayName() = %q", name)
 		}
-		if len(name) > 32 {
+		if len(name) > 16 {
 			t.Fatalf("randomDisplayName() length = %d, name = %q", len(name), name)
 		}
 	}

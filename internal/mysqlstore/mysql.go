@@ -2,10 +2,11 @@ package mysqlstore
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base32"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -38,28 +39,22 @@ func (s *Store) EnsureUser(ctx context.Context, userID int64) error {
 INSERT INTO ` + s.usersTable + ` (user_id, account_type, displayname)
 VALUES (?, -1, ?)
 ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`
-	if _, err := s.db.ExecContext(ctx, query, userID, randomDisplayName()); err != nil {
+	displayName, err := randomDisplayName()
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, query, userID, displayName); err != nil {
 		return fmt.Errorf("ensure user: %w", err)
 	}
 	return nil
 }
 
-var displayNameAdjectives = [...]string{
-	"Agile", "Amber", "Brave", "Bright", "Calm", "Clever", "Cosmic", "Daring",
-	"Electric", "Gentle", "Golden", "Happy", "Jolly", "Lucky", "Mighty", "Nimble",
-	"Rapid", "Silver", "Solar", "Steady", "Swift", "Turbo", "Valiant", "Wild",
-}
-
-var displayNameNouns = [...]string{
-	"Badger", "Bear", "Bison", "Cobra", "Eagle", "Falcon", "Fox", "Gazelle",
-	"Gecko", "Hawk", "Heron", "Jaguar", "Koala", "Lynx", "Mantis", "Otter",
-	"Owl", "Panda", "Raven", "Shark", "Tiger", "Toucan", "Wolf", "Yak",
-}
-
-func randomDisplayName() string {
-	adjective := displayNameAdjectives[rand.IntN(len(displayNameAdjectives))]
-	noun := displayNameNouns[rand.IntN(len(displayNameNouns))]
-	return fmt.Sprintf("%s%s%d", adjective, noun, rand.IntN(10_000))
+func randomDisplayName() (string, error) {
+	value := make([]byte, 8)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate display name: %w", err)
+	}
+	return "GO-" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(value), nil
 }
 
 func (s *Store) SavePendingLogin(ctx context.Context, authCallback callback.AuthCallback) error {
