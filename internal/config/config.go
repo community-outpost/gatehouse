@@ -19,16 +19,17 @@ var environmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 var mysqlIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
 type Config struct {
-	ListenAddress        string               `yaml:"listen_address"`
-	InboundAPIKey        string               `yaml:"inbound_api_key"`
-	InboundAPIKeyFile    string               `yaml:"inbound_api_key_file"`
-	BackendTimeout       Duration             `yaml:"backend_timeout"`
-	ShutdownTimeout      Duration             `yaml:"shutdown_timeout"`
-	MaxCallbackBodyBytes int64                `yaml:"max_callback_body_bytes"`
-	TrustedProxies       []string             `yaml:"trusted_proxies"`
-	MySQL                MySQLConfig          `yaml:"mysql"`
-	Authentication       AuthenticationConfig `yaml:"authentication"`
-	Backends             BackendsConfig       `yaml:"backends"`
+	ListenAddress            string               `yaml:"listen_address"`
+	InboundAPIKey            string               `yaml:"inbound_api_key"`
+	InboundAPIKeyFile        string               `yaml:"inbound_api_key_file"`
+	AllowUnsafeInboundAPIKey bool                 `yaml:"allow_unsafe_inbound_api_key"`
+	BackendTimeout           Duration             `yaml:"backend_timeout"`
+	ShutdownTimeout          Duration             `yaml:"shutdown_timeout"`
+	MaxCallbackBodyBytes     int64                `yaml:"max_callback_body_bytes"`
+	TrustedProxies           []string             `yaml:"trusted_proxies"`
+	MySQL                    MySQLConfig          `yaml:"mysql"`
+	Authentication           AuthenticationConfig `yaml:"authentication"`
+	Backends                 BackendsConfig       `yaml:"backends"`
 }
 
 type MySQLConfig struct {
@@ -145,6 +146,13 @@ func Load() (Config, error) {
 	}
 	if value := os.Getenv("GATEHOUSE_INBOUND_API_KEY_FILE"); value != "" {
 		cfg.InboundAPIKeyFile = value
+	}
+	if value := os.Getenv("GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY"); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY: %w", err)
+		}
+		cfg.AllowUnsafeInboundAPIKey = parsed
 	}
 	if value := os.Getenv("GATEHOUSE_BACKEND_TIMEOUT"); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -282,8 +290,11 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.MySQL.DSN) == "" {
 		return errors.New("mysql.dsn is required")
 	}
-	if len(c.InboundAPIKey) < 32 || c.InboundAPIKey == "CHANGE_ME" {
-		return errors.New("inbound_api_key must contain at least 32 characters and must not be a placeholder")
+	if c.InboundAPIKey == "" {
+		return errors.New("inbound_api_key is required")
+	}
+	if !c.AllowUnsafeInboundAPIKey && (len(c.InboundAPIKey) < 32 || c.InboundAPIKey == "CHANGE_ME") {
+		return errors.New("inbound_api_key must contain at least 32 characters and must not be a placeholder; set allow_unsafe_inbound_api_key only to override this check")
 	}
 	if c.BackendTimeout.Duration <= 0 {
 		return errors.New("backend_timeout must be positive")

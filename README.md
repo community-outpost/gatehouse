@@ -161,12 +161,16 @@ go run ./cmd/gatehouse
 
 Credentials may be set directly or through their `*_file` alternative. The
 inbound key must be at least 32 characters; generate one with
-`openssl rand -hex 32`.
+`openssl rand -hex 32`. For development only, set
+`allow_unsafe_inbound_api_key: true` or
+`GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY=true` to bypass the key length and
+placeholder checks. GateHouse logs a warning whenever this override is enabled.
 Scalar overrides are:
 
 `GATEHOUSE_LISTEN_ADDRESS`, `GATEHOUSE_MYSQL_DSN`,
 `GATEHOUSE_MYSQL_DSN_FILE`, `GATEHOUSE_INBOUND_API_KEY`,
-`GATEHOUSE_INBOUND_API_KEY_FILE`, `GATEHOUSE_DOCKER_HOST`,
+`GATEHOUSE_INBOUND_API_KEY_FILE`,
+`GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY`, `GATEHOUSE_DOCKER_HOST`,
 `GATEHOUSE_BACKEND_TIMEOUT`, `GATEHOUSE_SHUTDOWN_TIMEOUT`,
 `GATEHOUSE_MAX_CALLBACK_BODY_BYTES`, and
 `GATEHOUSE_MYSQL_ADVISORY_LOCK_TIMEOUT_SECONDS`.

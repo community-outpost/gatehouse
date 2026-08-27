@@ -29,6 +29,9 @@ func main() {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
+	if cfg.AllowUnsafeInboundAPIKey {
+		logger.Warn("unsafe inbound API key validation override enabled")
+	}
 
 	db, err := sqlx.Open("mysql", cfg.MySQL.DSN)
 	if err != nil {

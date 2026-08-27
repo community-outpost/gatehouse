@@ -7,6 +7,8 @@ trusted_proxies: []
 inbound_api_key: CHANGE_ME
 # Use this instead of inbound_api_key when switching to a secret file:
 # inbound_api_key_file: /run/secrets/gatehouse_inbound_api_key
+# Development only: bypass the minimum length and placeholder checks.
+# allow_unsafe_inbound_api_key: true
 
 mysql:
   dsn: 'gatehouse:CHANGE_ME@tcp(db.example.internal:3306)/gatehouse'

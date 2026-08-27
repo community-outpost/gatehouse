@@ -36,6 +36,7 @@ func TestValidateNormalizesBackendEnvironment(t *testing.T) {
 
 func TestExampleConfigLoads(t *testing.T) {
 	for _, variable := range []string{
+		"GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY",
 		"GATEHOUSE_BACKEND_TIMEOUT",
 		"GATEHOUSE_DOCKER_HOST",
 		"GATEHOUSE_INBOUND_API_KEY_FILE",
@@ -48,7 +49,8 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	t.Setenv("GATEHOUSE_CONFIG", filepath.Join("..", "..", "config.example.yaml"))
 	t.Setenv("GATEHOUSE_MYSQL_DSN", "user:pass@tcp(db.example.internal:3306)/gatehouse")
-	t.Setenv("GATEHOUSE_INBOUND_API_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("GATEHOUSE_INBOUND_API_KEY", "secret")
+	t.Setenv("GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -68,6 +70,9 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	if len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("TrustedProxies = %#v", cfg.TrustedProxies)
+	}
+	if !cfg.AllowUnsafeInboundAPIKey {
+		t.Fatal("AllowUnsafeInboundAPIKey = false")
 	}
 	if issuer := cfg.Authentication.GORedirectIssuer(); issuer != "generalsonline" {
 		t.Fatalf("GORedirectIssuer() = %q", issuer)
@@ -159,6 +164,40 @@ func TestValidateRejectsWeakInboundAPIKey(t *testing.T) {
 	cfg.InboundAPIKey = "secret"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil")
+	}
+}
+
+func TestValidateAllowsUnsafeInboundAPIKeyWhenExplicitlyEnabled(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"secret", "CHANGE_ME"} {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.InboundAPIKey = key
+			cfg.AllowUnsafeInboundAPIKey = true
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsEmptyInboundAPIKeyWithUnsafeOverride(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.InboundAPIKey = ""
+	cfg.AllowUnsafeInboundAPIKey = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil")
+	}
+}
+
+func TestLoadRejectsInvalidAllowUnsafeInboundAPIKeyEnvironmentOverride(t *testing.T) {
+	t.Setenv("GATEHOUSE_CONFIG", "")
+	t.Setenv("GATEHOUSE_ALLOW_UNSAFE_INBOUND_API_KEY", "not-a-boolean")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil")
 	}
 }
 
