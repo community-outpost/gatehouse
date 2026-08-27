@@ -15,8 +15,76 @@ mysql:
 
   users_table: users
   pending_logins_table: pending_logins
+  login_principals_table: login_principals
   startup_timeout: 10s
   advisory_lock_timeout_seconds: 5
+
+authentication:
+  public_origin: https://gatehouse.example.com
+
+  # Operator-owned login presentation. Omit file fields to use the embedded
+  # GateHouse logo and favicon. Mount custom files read-only in containers.
+  ui:
+    service_name: GateHouse
+    operator_name: Example Operator
+    application_name: Example Game
+    accent_color: '#00e7f0'
+    background_color: '#060a0b'
+    # logo_file: /etc/gatehouse/branding/logo.png
+    # favicon_file: /etc/gatehouse/branding/favicon.png
+
+  providers:
+    generalsonline:
+      enabled: true
+      label: GeneralsOnline
+      description: Continue with the existing GeneralsOnline login
+      icon: generalsonline
+      protocol: go_redirect
+      login_url: https://www.playgenerals.online/login/
+
+    gamereplays:
+      enabled: false
+      label: GameReplays
+      description: Continue with your GameReplays account
+      icon: gamereplays
+      protocol: oauth2
+      authorization_url: https://www.gamereplays.org/community/modules/oauth/authorize.php
+      token_url: https://www.gamereplays.org/community/modules/oauth/token.php
+      user_info_url: https://www.gamereplays.org/community/modules/oauth/resource.php
+      client_id: CHANGE_ME
+      client_secret: CHANGE_ME
+      # Or use: client_secret_file: /run/secrets/gatehouse_gamereplays_client_secret
+      scopes:
+        - user_profile
+      subject_field: id
+      user_object_field: user
+      token_auth_method: client_secret_post
+
+    discord:
+      enabled: false
+      label: Discord
+      description: Continue with your Discord account
+      icon: discord
+      # Or replace icon with: icon_file: /etc/gatehouse/branding/discord.svg
+      protocol: oauth2
+      authorization_url: https://discord.com/oauth2/authorize
+      token_url: https://discord.com/api/v10/oauth2/token
+      user_info_url: https://discord.com/api/v10/users/@me
+      client_id: CHANGE_ME
+      client_secret: CHANGE_ME
+      # Or use: client_secret_file: /run/secrets/gatehouse_discord_client_secret
+      scopes:
+        - identify
+      subject_field: id
+      token_auth_method: client_secret_post
+
+    steam:
+      enabled: false
+      label: Steam
+      description: Continue with your Steam account
+      icon: steam
+      protocol: steam_openid
+      openid_endpoint: https://steamcommunity.com/openid/login
 
 backends:
   docker:
@@ -32,29 +100,30 @@ backends:
 
     overrides: {}
     # overrides:
-    #   example_alpha:
+    #   production:
     #     scheme: https
-    #     host: alpha.internal
+    #     host: game-server.internal
     #     port: 8443
     #     path: /LoginCode
+    #     api_key_file: /run/secrets/production_backend_key
     #
-    #   example_private:
+    #   private:
     #     path: /env/{environment}/contract/1/LoginCode
     #     api_key: replace-with-backend-key
     #
-    #   example_secret_file:
+    #   secret_file:
     #     api_key_file: /run/secrets/secret-file-backend-key
 
   static: {}
   # static:
-  #   # No api_key means pass through the authenticated inbound key.
-  #   example_passthrough:
+  #   direct:
   #     callback_url: https://backend.example.com/LoginCode
+  #     api_key_file: /run/secrets/direct_backend_key
   #
-  #   example_private:
+  #   private:
   #     callback_url: https://private.example.com/auth/LoginCode
   #     api_key: replace-with-backend-key
   #
-  #   example_secret_file:
+  #   secret_file:
   #     callback_url: https://secret.example.com/LoginCode
   #     api_key_file: /run/secrets/secret-file-backend-key

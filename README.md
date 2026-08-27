@@ -1,23 +1,14 @@
-# Gatehouse
+# GateHouse
 
-Gatehouse is a centralized user store and authentication bridge for
-[GeneralsOnline Services](https://github.com/GeneralsOnlineDevelopmentTeam/Services)
-and the legacy
-[GameClient](https://github.com/GeneralsOnlineDevelopmentTeam/GameClient).
-For a new positive user ID it creates a minimal `users` row with
-`account_type = -1` and a generated display name. It then forwards the callback
-to an environment backend or falls back to `pending_logins`. Existing users
-are unchanged. Delivery is at-least-once.
+GateHouse brokers browser login for
+[GeneralsOnline Services](https://github.com/GeneralsOnlineDevelopmentTeam/Services).
+It can use the existing GeneralsOnline login or authenticate users through
+GameReplays, Discord, and Steam.
 
-```mermaid
-flowchart LR
-    A[Authentication provider] -->|POST + X-Api-Key| G[Gatehouse]
-    G --> U[(gatehouse.users)]
-    G --> D{Environment backend accepts?}
-    D -->|Yes| B[Backend: HTTP 204]
-    D -->|No| P[(gatehouse.pending_logins)]
-    P --> F[Fallback: HTTP 202]
-```
+Each provider account gets its own local numeric user ID; account linking is
+disabled. On first sign-in, users choose a display name. GateHouse then sends
+the completed login to the right Services backend. If no backend accepts it,
+GateHouse writes it to `pending_logins` for the legacy database-backed flow.
 
 ## Login flow
 
@@ -33,28 +24,31 @@ flowchart LR
         B1[Services backend A]
         B2[Services backend B]
         B3[Services backend C]
-        L[Legacy Services]
+        L[Services: legacy DB flow]
         R[HTTP response]
     end
 
     subgraph Authentication
         I[Authentication provider]
-        G[Gatehouse]
-        D{Callback route}
+        G[GateHouse]
+        D{Login completion route}
     end
 
     subgraph Database[Central MariaDB]
-        U[(gatehouse.users)]
+        A[(login_principals)]
+        U[(users)]
         UV[users views]
-        P[(gatehouse.pending_logins)]
+        P[(pending_logins)]
         PV[pending_logins view]
+        M[(match_history)]
+        MV[match_history views]
     end
 
     C -->|1. HTTP LoginCode; 6. HTTP CheckLogin| E
     E -->|Backend A| B1
     E -->|Backend B| B2
     E -->|Backend C| B3
-    E -->|Legacy| L
+    E -->|Legacy DB flow| L
     B1 --> R
     B2 --> R
     B3 --> R
@@ -63,38 +57,78 @@ flowchart LR
 
     C -->|3. Open browser| W
     W -->|4. Authenticate| I
-    I -->|5. Callback| G
+    I -->|5. Complete login code| G
 
-    G -->|Upsert| U
+    G -->|Resolve identity| A
+    A --> U
     B1 -->|User SQL| UV
     B2 -->|User SQL| UV
     B3 -->|User SQL| UV
     L -->|User SQL| UV
     UV -->|View target| U
+    B1 -->|Match SQL| MV
+    B2 -->|Match SQL| MV
+    B3 -->|Match SQL| MV
+    MV -->|View target| M
 
     G --> D
     D -->|Backend A| B1
     D -->|Backend B| B2
     D -->|Backend C| B3
     D -->|No backend responds| P
-    L -->|Legacy CheckLogin SQL| PV
+    L -->|CheckLogin reads SQL| PV
     PV -->|View target| P
 ```
 
+## Login providers
+
+Providers and their credentials are configured in
+[`config.example.yaml`](config.example.yaml). The built-in protocols cover the
+existing GeneralsOnline redirect, OAuth 2.0, and Steam OpenID 2.0. Steam does
+not require an API key.
+
+The game opens `/login?gamecode=...&env=...`; both values are required. There is
+no provider-initiated login or default environment. To skip the provider
+picker, open `/login/{provider}?gamecode=...&env=...`. OAuth and OpenID
+providers return to `/login/{provider}/return`. Use these values when
+registering a provider:
+
+```text
+Origin:     https://gatehouse.example.com
+Return URL: https://gatehouse.example.com/login/{provider}/return
+```
+
+`login_principals` stores only the provider's stable account ID. Usernames,
+email addresses, and display names returned by providers are ignored. Its
+unique `user_id` keeps provider accounts separate. The enabled `go_redirect`
+provider's configuration key is used as the issuer, so do not rename it after
+users have signed in.
+
+Display names are unique and limited to 3–16 ASCII characters. The form shows
+the permitted punctuation, validates as the user types, and can roll an
+editable suggestion. GateHouse validates again and checks availability on
+submit.
+
+Branding, colors, and provider icons are configured under `authentication.ui`
+and `authentication.providers`.
+
 ## HTTP API
 
-| Method | Path                                      | Purpose                           |
-| ------ | ----------------------------------------- | --------------------------------- |
-| `POST` | `/LoginCode`                              | Canonical authentication callback |
-| `POST` | `/env/{environment}/contract/1/LoginCode` | Services-compatible callback      |
-| `GET`  | `/healthz`                                | Process liveness                  |
-| `GET`  | `/readyz`                                 | MySQL readiness                   |
+| Method | Path                                      | Purpose                              |
+| ------ | ----------------------------------------- | ------------------------------------ |
+| `POST` | `/LoginCode`                              | Complete a login (`env` in body)     |
+| `POST` | `/env/{environment}/contract/1/LoginCode` | Complete a login (`env` in path)     |
+| `GET`  | `/healthz`                                | Process liveness                     |
+| `GET`  | `/readyz`                                 | MySQL readiness                      |
 
-Callback endpoints require `X-Api-Key`. Backend delivery returns `204`;
-MySQL fallback returns `202`. `X-Gatehouse-Delivery` identifies `backend` or
-`mysql-fallback`.
+The two login completion routes accept the result of web authentication and
+require `X-Api-Key`. The game gets a code from Services, opens the browser, and
+polls `CheckLogin` while GateHouse delivers the result.
 
-### Callback contract
+A backend delivery returns `204`. The `pending_logins` fallback returns `202`.
+`X-Gatehouse-Delivery` identifies the path used.
+
+### Login completion payload
 
 ```json
 {
@@ -110,20 +144,26 @@ MySQL fallback returns `202`. `X-Gatehouse-Delivery` identifies `backend` or
 - `user_id`: required and positive on success; failed callbacks may use `-1`.
 - `success`: boolean.
 
-Additional JSON properties pass through unchanged. Account type and provider
-metadata will be upserted once those callback fields and linking rules are
-defined.
+For GeneralsOnline, the incoming `user_id` is the upstream ID. GateHouse maps it
+through the enabled `go_redirect` provider and delivers the local user ID.
+Browser providers do not send this payload; GateHouse creates it after their
+callback. No additional properties are forwarded.
 
 ## Configuration
 
-Copy [`config.example.yaml`](config.example.yaml), set its credentials, then:
+Copy [`config.example.yaml`](config.example.yaml), set its public URL and
+credentials, then:
 
 ```bash
 export GATEHOUSE_CONFIG=./config.yaml
 go run ./cmd/gatehouse
 ```
 
-Use either a literal secret or its `*_file` alternative. Scalar overrides are
+Credentials may be set directly or through their `*_file` alternative. The
+inbound key must be at least 32 characters; generate one with
+`openssl rand -hex 32`.
+Scalar overrides are:
+
 `GATEHOUSE_LISTEN_ADDRESS`, `GATEHOUSE_MYSQL_DSN`,
 `GATEHOUSE_MYSQL_DSN_FILE`, `GATEHOUSE_INBOUND_API_KEY`,
 `GATEHOUSE_INBOUND_API_KEY_FILE`, `GATEHOUSE_DOCKER_HOST`,
@@ -133,7 +173,7 @@ Use either a literal secret or its `*_file` alternative. Scalar overrides are
 
 ### Container quick start
 
-Images use `latest` and short-commit tags for `linux/amd64` and
+Images are published with `latest` and short-commit tags for `linux/amd64` and
 `linux/arm64`. With `config.yaml` prepared:
 
 ```yaml
@@ -171,8 +211,9 @@ export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
 docker compose up -d
 ```
 
-Discovered backends must join the configured `gatehouse` network. Remove the
-socket mount and `group_add` with a socket proxy or disabled discovery.
+Discovered backends must join the configured `gatehouse` network. If discovery
+is disabled, remove the socket mount and `group_add`. For production discovery,
+prefer a restricted socket proxy over mounting the Docker socket directly.
 
 ### Static backends
 
@@ -181,13 +222,15 @@ backends:
   static:
     example_alpha:
       callback_url: https://backend.example.com/LoginCode
+      api_key_file: /run/secrets/example_alpha_api_key
     example_private:
       callback_url: https://private.example.com/auth/LoginCode
       api_key_file: /run/secrets/example_private_api_key
 ```
 
-Without a backend key, Gatehouse passes through the inbound key. Static
-backends take precedence over Docker discovery.
+Each backend needs its own API key; GateHouse never forwards its inbound key.
+A discovered backend without a key is skipped and delivery falls back to
+`pending_logins`. Static backends take precedence over Docker discovery.
 
 ### Docker discovery
 
@@ -202,20 +245,21 @@ Docker defaults:
 | Label suffix | Meaning                                                          |
 | ------------ | ---------------------------------------------------------------- |
 | `.scheme`    | `http` or `https`                                                |
-| `.host`      | Hostname or IP instead of the selected container-network address |
 | `.port`      | Backend port                                                     |
 | `.path`      | Callback path; may contain `{environment}`                       |
 
-`backends.docker.overrides` wins over labels and may set the API key; labels
-never contain keys. Duplicate environments are round-robin. Prefer rootless
-Docker/Podman or a private
+`backends.docker.overrides` takes precedence over labels and is the only place
+to configure a discovered backend's API key or host. Duplicate environments
+are round-robin. Prefer rootless Docker/Podman or a private
 [socket proxy](https://github.com/Tecnativa/docker-socket-proxy) limited to
 container `GET`/`HEAD` requests.
 
 ## MySQL setup
 
-Gatehouse does not manage schema. It uses central `users` and `pending_logins`
-tables; each Services database exposes them through cross-database views.
+GateHouse does not create its own schema. A greenfield setup uses central
+`users`, `login_principals`, `pending_logins`, and `match_history` tables. Each
+Services database reaches `users`, `pending_logins`, and `match_history` through
+views; `external_publication` stays local to that Services database.
 
 ### 1. Create the central tables
 
@@ -246,10 +290,30 @@ CREATE TABLE gatehouse.users (
   banned_by VARCHAR(50) NULL,
   ban_verified_by VARCHAR(50) NULL,
   ban_aliases VARCHAR(50) NULL,
-  PRIMARY KEY (user_id)
+  PRIMARY KEY (user_id),
+  UNIQUE KEY uq_users_displayname (displayname),
+  CONSTRAINT chk_users_displayname_safe
+    CHECK (
+      CHAR_LENGTH(displayname) BETWEEN 3 AND 16
+      AND displayname REGEXP
+        '^[A-Za-z0-9_.(){}!?@#$%^&*+=~''\\[\\]-]+( [A-Za-z0-9_.(){}!?@#$%^&*+=~''\\[\\]-]+)*$'
+    )
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_general_ci;
+
+CREATE TABLE gatehouse.login_principals (
+  issuer VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  subject VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  user_id BIGINT NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (issuer, subject),
+  UNIQUE KEY uq_login_principals_user_id (user_id),
+  CONSTRAINT fk_login_principals_user
+    FOREIGN KEY (user_id) REFERENCES gatehouse.users (user_id)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_bin;
 
 CREATE TABLE gatehouse.pending_logins (
   code VARCHAR(32) NOT NULL,
@@ -260,27 +324,79 @@ CREATE TABLE gatehouse.pending_logins (
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_general_ci;
+
+CREATE TABLE gatehouse.match_history (
+  match_id BIGINT NOT NULL AUTO_INCREMENT,
+  owner BIGINT NOT NULL,
+  name VARCHAR(64) NOT NULL,
+  finished TINYINT(1) NOT NULL DEFAULT 0,
+  started DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  time_finished DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  map_name VARCHAR(128) NOT NULL,
+  map_official TINYINT(1) NOT NULL,
+  match_roster_type VARCHAR(32) NOT NULL DEFAULT '',
+  lobby_type TINYINT(3) UNSIGNED NULL,
+  vanilla_teams TINYINT(1) NOT NULL,
+  starting_cash INT(10) UNSIGNED NOT NULL,
+  limit_superweapons TINYINT(1) NOT NULL,
+  track_stats TINYINT(1) NOT NULL,
+  allow_observers TINYINT(1) NOT NULL,
+  max_cam_height SMALLINT(6) UNSIGNED NOT NULL,
+  exe_crc INT(10) UNSIGNED NOT NULL DEFAULT 0,
+  ini_crc INT(10) UNSIGNED NOT NULL DEFAULT 0,
+  map_path VARCHAR(128) NULL,
+  member_slot_0 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_0)),
+  member_slot_1 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_1)),
+  member_slot_2 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_2)),
+  member_slot_3 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_3)),
+  member_slot_4 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_4)),
+  member_slot_5 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_5)),
+  member_slot_6 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_6)),
+  member_slot_7 LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (JSON_VALID(member_slot_7)),
+  PRIMARY KEY (match_id)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_general_ci;
 ```
 
-### 2. Create the Gatehouse database user
+The provider-specific columns in `users` remain for Services compatibility;
+GateHouse does not use them. All environments share `match_history` and its ID
+sequence.
+
+A fresh table starts at match ID `1`. To continue an existing public sequence,
+import any old rows first, find the next ID, and set it before starting Services:
+
+```sql
+SELECT COALESCE(MAX(match_id), 0) + 1 AS next_match_id
+FROM gatehouse.match_history;
+
+-- Replace 1000000 with that result, or with the next externally assigned ID.
+ALTER TABLE gatehouse.match_history AUTO_INCREMENT = 1000000;
+```
+
+Run this once on the shared table, not once per environment.
+
+### 2. Create the GateHouse database user
 
 Generate a password with `openssl rand -hex 32`:
 
 ```sql
 CREATE USER 'gatehouse'@'%' IDENTIFIED BY 'CHANGE_ME';
 
-GRANT INSERT, UPDATE
+GRANT SELECT, INSERT, UPDATE
   ON gatehouse.users TO 'gatehouse'@'%';
+GRANT SELECT, INSERT
+  ON gatehouse.login_principals TO 'gatehouse'@'%';
 GRANT INSERT, DELETE
   ON gatehouse.pending_logins TO 'gatehouse'@'%';
 ```
 
-Restrict `%` to the Gatehouse host or subnet where possible.
+Restrict `%` to the GateHouse host or subnet where possible.
 
 ### 3. Link a Services instance database
 
-For Services database `go_alpha`, migrate its existing user/login rows into
-`gatehouse`, replace its two local tables with these views:
+For a greenfield Services database named `go_alpha`, create these views instead
+of local `users`, `pending_logins`, and `match_history` tables:
 
 ```sql
 CREATE OR REPLACE
@@ -321,7 +437,18 @@ CREATE OR REPLACE
 VIEW go_alpha.pending_logins AS
 SELECT code, state, created, user_id
 FROM gatehouse.pending_logins;
+
+CREATE OR REPLACE
+  ALGORITHM = MERGE
+  SQL SECURITY INVOKER
+VIEW go_alpha.match_history AS
+SELECT *
+FROM gatehouse.match_history;
 ```
+
+`match_history` is shared across environments. Its view remains writable, so
+Services can insert matches and receive generated IDs. Leave the
+Services-created `external_publication` table local to each Services database.
 
 ### 4. Create the Services database user
 
@@ -335,28 +462,34 @@ GRANT SELECT, INSERT, UPDATE
   ON gatehouse.users TO 'go_alpha'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE
   ON gatehouse.pending_logins TO 'go_alpha'@'%';
+GRANT SELECT, INSERT, UPDATE
+  ON gatehouse.match_history TO 'go_alpha'@'%';
 ```
 
-Use a unique database and account per instance, and restrict `%` to its host
-or subnet where possible.
+Use a separate database and account for each instance. Restrict `%` to the
+instance host or subnet where possible.
 
 ## Reverse proxies and logging
 
 Only CIDRs in `trusted_proxies` may supply `X-Forwarded-For` or
 `X-Real-Ip`; other forwarding headers are ignored.
 
-JSON logs go to stdout and include callback bodies up to
-`max_callback_body_bytes`, but never `X-Api-Key`. Restrict log access and
-retention. Terminate TLS upstream, use strong keys, and prefer secret files.
+JSON logs omit request bodies, query strings, and `X-Api-Key`. Configure the
+reverse proxy to omit or redact query strings as well: login URLs contain a
+short-lived game code. Terminate TLS at the proxy and rate-limit public
+`/login` routes; GateHouse also caps concurrent login requests.
 
 ## Build and test
 
 ```bash
 go test ./...
 go vet ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
 go build ./cmd/gatehouse
 docker build -t gatehouse .
 ```
 
-Pull requests run tests and vetting only. Default-branch pushes publish
-`ghcr.io/community-outpost/gatehouse` with `latest` and short-commit tags.
+CI runs the tests, vet, and security scans above. Pushes to the default branch
+publish `latest` and short-commit tags to
+`ghcr.io/community-outpost/gatehouse`.
