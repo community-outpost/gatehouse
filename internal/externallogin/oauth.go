@@ -129,11 +129,14 @@ func (o *OAuth) Authenticate(ctx context.Context, values url.Values) (Identity, 
 		return Identity{}, fmt.Errorf("fetch user info: %w", err)
 	}
 	if o.config.UserObjectField != "" {
-		nested, ok := profile[o.config.UserObjectField].(map[string]any)
-		if !ok {
-			return Identity{}, fmt.Errorf("user-info field %q must be an object", o.config.UserObjectField)
+		value, exists := profile[o.config.UserObjectField]
+		if exists && value != nil {
+			nested, ok := value.(map[string]any)
+			if !ok {
+				return Identity{}, fmt.Errorf("user-info field %q must be an object", o.config.UserObjectField)
+			}
+			profile = nested
 		}
-		profile = nested
 	}
 	subject, err := oauthSubject(profile[o.config.SubjectField])
 	if err != nil {

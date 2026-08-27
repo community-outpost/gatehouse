@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestOAuthAuthenticatesConfiguredSubjectFromWrappedProfile(t *testing.T) {
+func TestOAuthAuthenticatesConfiguredSubjectFromWrappedOrFlatProfile(t *testing.T) {
 	t.Parallel()
 
 	providerServer := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -18,18 +18,27 @@ func TestOAuthAuthenticatesConfiguredSubjectFromWrappedProfile(t *testing.T) {
 			if err := request.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
-			if request.Form.Get("client_id") != "client" || request.Form.Get("client_secret") != "secret" ||
-				request.Form.Get("code") != "code" {
+			if request.Form.Get("client_id") != "client" || request.Form.Get("client_secret") != "secret" {
 				t.Errorf("token form = %v", request.Form)
 			}
-			_ = json.NewEncoder(writer).Encode(map[string]string{"access_token": "access", "token_type": "Bearer"})
-		case "/resource.php":
-			if request.Header.Get("Authorization") != "Bearer access" {
-				t.Errorf("authorization = %q", request.Header.Get("Authorization"))
-			}
-			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"user": map[string]any{"id": 4242, "members_display_name": "Provider Name", "email": "ignored@example.com"},
+			_ = json.NewEncoder(writer).Encode(map[string]string{
+				"access_token": request.Form.Get("code"),
+				"token_type":   "Bearer",
 			})
+		case "/resource.php":
+			switch request.Header.Get("Authorization") {
+			case "Bearer wrapped":
+				_ = json.NewEncoder(writer).Encode(map[string]any{
+					"user": map[string]any{"id": 4242, "members_display_name": "Provider Name", "email": "ignored@example.com"},
+				})
+			case "Bearer flat":
+				_ = json.NewEncoder(writer).Encode(map[string]any{
+					"id": 4243, "members_display_name": "Flat Provider Name", "email": "ignored@example.com",
+				})
+			default:
+				t.Errorf("authorization = %q", request.Header.Get("Authorization"))
+				http.Error(writer, "unexpected token", http.StatusUnauthorized)
+			}
 		default:
 			http.NotFound(writer, request)
 		}
@@ -61,11 +70,19 @@ func TestOAuthAuthenticatesConfiguredSubjectFromWrappedProfile(t *testing.T) {
 		t.Fatalf("authorization URL = %s", authorizationURL)
 	}
 
-	identity, err := provider.Authenticate(context.Background(), url.Values{"code": {"code"}})
+	identity, err := provider.Authenticate(context.Background(), url.Values{"code": {"wrapped"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if identity.Subject != "4242" {
 		t.Fatalf("identity = %+v", identity)
+	}
+
+	identity, err = provider.Authenticate(context.Background(), url.Values{"code": {"flat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Subject != "4243" {
+		t.Fatalf("flat identity = %+v", identity)
 	}
 }
