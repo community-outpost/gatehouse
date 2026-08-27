@@ -47,7 +47,7 @@ func TestEnvironmentLabelCreatesDefaultBackend(t *testing.T) {
 	}
 }
 
-func TestLabelsOverrideDefaultsAndYAMLOverridesKey(t *testing.T) {
+func TestLabelsOverrideProtocolDetailsButNotContainerHost(t *testing.T) {
 	t.Parallel()
 
 	server := dockerServer(t, []map[string]any{
@@ -60,7 +60,9 @@ func TestLabelsOverrideDefaultsAndYAMLOverridesKey(t *testing.T) {
 				"com.community-outpost.gatehouse.port":        "9443",
 				"com.community-outpost.gatehouse.path":        "/LoginCode?contract=1",
 			},
-			"NetworkSettings": map[string]any{"Networks": map[string]any{}},
+			"NetworkSettings": map[string]any{"Networks": map[string]any{
+				"gatehouse": map[string]string{"IPAddress": "172.30.0.13"},
+			}},
 		},
 	})
 	defer server.Close()
@@ -77,7 +79,7 @@ func TestLabelsOverrideDefaultsAndYAMLOverridesKey(t *testing.T) {
 		t.Fatalf("Refresh() error = %v", err)
 	}
 	target, ok := resolver.Resolve("example_beta")
-	if !ok || target.CallbackURL != "https://beta.internal:9443/LoginCode?contract=1" || target.APIKey != "override-secret" {
+	if !ok || target.CallbackURL != "https://172.30.0.13:9443/LoginCode?contract=1" || target.APIKey != "override-secret" {
 		t.Fatalf("target = %+v, ok=%v", target, ok)
 	}
 }

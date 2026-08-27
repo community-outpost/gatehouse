@@ -14,7 +14,7 @@ func TestDispatchUsesBackendAfterEnsuringUser(t *testing.T) {
 	forwarder := &fakeForwarder{accepts: true}
 	service := NewService(store, forwarder, discardLogger())
 
-	delivery, err := service.Dispatch(context.Background(), testCallback(), "request-1", "incoming-secret")
+	delivery, err := service.Dispatch(context.Background(), testCallback(), "request-1")
 	if err != nil {
 		t.Fatalf("Dispatch() error = %v", err)
 	}
@@ -33,7 +33,7 @@ func TestDispatchFallsBackWhenBackendDoesNotAccept(t *testing.T) {
 	forwarder := &fakeForwarder{}
 	service := NewService(store, forwarder, discardLogger())
 
-	delivery, err := service.Dispatch(context.Background(), testCallback(), "", "incoming-secret")
+	delivery, err := service.Dispatch(context.Background(), testCallback(), "")
 	if err != nil {
 		t.Fatalf("Dispatch() error = %v", err)
 	}
@@ -42,6 +42,24 @@ func TestDispatchFallsBackWhenBackendDoesNotAccept(t *testing.T) {
 	}
 	if store.userUpdates != 1 || store.pendingWrites != 1 || forwarder.attempts != 1 {
 		t.Fatalf("updates=%d pending=%d attempts=%d", store.userUpdates, store.pendingWrites, forwarder.attempts)
+	}
+}
+
+func TestDispatchDoesNotEnsureUserForFailedCallback(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{}
+	service := NewService(store, &fakeForwarder{}, discardLogger())
+	authCallback, err := Parse([]byte(`{"env":"example_alpha","code":"ABC123","user_id":42,"success":false}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Dispatch(context.Background(), authCallback, ""); err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if store.userUpdates != 0 {
+		t.Fatalf("user updates = %d", store.userUpdates)
 	}
 }
 
@@ -77,7 +95,7 @@ type fakeForwarder struct {
 	attempts int
 }
 
-func (f *fakeForwarder) TryForward(context.Context, AuthCallback, string, string) (bool, error) {
+func (f *fakeForwarder) TryForward(context.Context, AuthCallback, string) (bool, error) {
 	f.attempts++
 	return f.accepts, nil
 }

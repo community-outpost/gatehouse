@@ -40,7 +40,7 @@ func TestHTTPForwarderPassesCanonicalCallbackAndBackendKey(t *testing.T) {
 	forwarder := NewHTTPForwarder(testResolver{
 		"example_alpha": {CallbackURL: backend.URL, APIKey: "backend-secret"},
 	}, time.Second, discardLogger())
-	accepted, err := forwarder.TryForward(t.Context(), testCallback(), "request-1", "incoming-secret")
+	accepted, err := forwarder.TryForward(t.Context(), testCallback(), "request-1")
 	if err != nil {
 		t.Fatalf("TryForward() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestHTTPForwarderTreatsNon2xxAsFallback(t *testing.T) {
 	forwarder := NewHTTPForwarder(testResolver{
 		"example_alpha": {CallbackURL: backend.URL, APIKey: "backend-secret"},
 	}, time.Second, discardLogger())
-	accepted, err := forwarder.TryForward(t.Context(), testCallback(), "", "incoming-secret")
+	accepted, err := forwarder.TryForward(t.Context(), testCallback(), "")
 	if err != nil {
 		t.Fatalf("TryForward() error = %v", err)
 	}
@@ -69,13 +69,12 @@ func TestHTTPForwarderTreatsNon2xxAsFallback(t *testing.T) {
 	}
 }
 
-func TestHTTPForwarderPassesInboundKeyWithoutOverride(t *testing.T) {
+func TestHTTPForwarderSkipsBackendWithoutDedicatedKey(t *testing.T) {
 	t.Parallel()
 
-	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("X-Api-Key") != "incoming-secret" {
-			t.Errorf("X-Api-Key = %q", request.Header.Get("X-Api-Key"))
-		}
+	called := false
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		called = true
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	defer backend.Close()
@@ -83,8 +82,11 @@ func TestHTTPForwarderPassesInboundKeyWithoutOverride(t *testing.T) {
 	forwarder := NewHTTPForwarder(testResolver{
 		"example_alpha": {CallbackURL: backend.URL},
 	}, time.Second, discardLogger())
-	accepted, err := forwarder.TryForward(t.Context(), testCallback(), "", "incoming-secret")
-	if err != nil || !accepted {
+	accepted, err := forwarder.TryForward(t.Context(), testCallback(), "")
+	if err != nil || accepted {
 		t.Fatalf("TryForward() accepted=%v error=%v", accepted, err)
+	}
+	if called {
+		t.Fatal("backend without a dedicated key was called")
 	}
 }

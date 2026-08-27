@@ -212,9 +212,6 @@ func (r *Resolver) backendFor(container dockerContainer) (callback.BackendTarget
 	}
 	host := strings.TrimSpace(override.Host)
 	if host == "" {
-		host = strings.TrimSpace(container.Labels[prefix+"host"])
-	}
-	if host == "" {
 		host = r.containerAddress(container)
 	}
 	if host == "" {

@@ -11,7 +11,7 @@ type Store interface {
 }
 
 type Forwarder interface {
-	TryForward(context.Context, AuthCallback, string, string) (bool, error)
+	TryForward(context.Context, AuthCallback, string) (bool, error)
 }
 
 type Service struct {
@@ -24,12 +24,14 @@ func NewService(store Store, forwarder Forwarder, logger *slog.Logger) *Service 
 	return &Service{store: store, forwarder: forwarder, logger: logger}
 }
 
-func (s *Service) Dispatch(ctx context.Context, authCallback AuthCallback, requestID, inboundAPIKey string) (Delivery, error) {
-	if err := s.store.EnsureUser(ctx, authCallback.UserID); err != nil {
-		return "", err
+func (s *Service) Dispatch(ctx context.Context, authCallback AuthCallback, requestID string) (Delivery, error) {
+	if authCallback.Success {
+		if err := s.store.EnsureUser(ctx, authCallback.UserID); err != nil {
+			return "", err
+		}
 	}
 
-	accepted, err := s.forwarder.TryForward(ctx, authCallback, requestID, inboundAPIKey)
+	accepted, err := s.forwarder.TryForward(ctx, authCallback, requestID)
 	if err != nil {
 		return "", err
 	}

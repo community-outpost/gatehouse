@@ -45,9 +45,9 @@ func NewHTTPForwarder(resolver BackendResolver, timeout time.Duration, logger *s
 	}
 }
 
-func (f *HTTPForwarder) TryForward(ctx context.Context, authCallback AuthCallback, requestID, inboundAPIKey string) (bool, error) {
+func (f *HTTPForwarder) TryForward(ctx context.Context, authCallback AuthCallback, requestID string) (bool, error) {
 	backend, ok := f.resolver.Resolve(authCallback.Environment)
-	if !ok {
+	if !ok || backend.APIKey == "" {
 		return false, nil
 	}
 	body, err := authCallback.JSON()
@@ -62,11 +62,7 @@ func (f *HTTPForwarder) TryForward(ctx context.Context, authCallback AuthCallbac
 		return false, fmt.Errorf("create backend callback: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	apiKey := backend.APIKey
-	if apiKey == "" {
-		apiKey = inboundAPIKey
-	}
-	request.Header.Set("X-Api-Key", apiKey)
+	request.Header.Set("X-Api-Key", backend.APIKey)
 	request.Header.Set("User-Agent", "gatehouse/1")
 	if requestID != "" {
 		request.Header.Set("X-Request-ID", requestID)
