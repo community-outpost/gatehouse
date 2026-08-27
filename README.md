@@ -391,7 +391,7 @@ GRANT SELECT, INSERT, UPDATE
   ON gatehouse.users TO 'gatehouse'@'%';
 GRANT SELECT, INSERT
   ON gatehouse.login_principals TO 'gatehouse'@'%';
-GRANT INSERT, DELETE
+GRANT SELECT (code), INSERT, DELETE
   ON gatehouse.pending_logins TO 'gatehouse'@'%';
 ```
 
